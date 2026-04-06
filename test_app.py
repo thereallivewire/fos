@@ -321,7 +321,78 @@ class TestUploadRoute:
 
 
 # ──────────────────────────────────────────────
-# 6. End-to-end: full pipeline test
+# 6. Frontend HTML tests: catch download/upload bugs
+# ──────────────────────────────────────────────
+
+class TestFrontendHtml:
+    """Tests that inspect the rendered HTML to catch structural issues
+    like the iframe bug where downloads were swallowed silently."""
+
+    def test_no_iframe_in_page(self, client):
+        """An iframe target swallows file downloads instead of saving them."""
+        resp = client.get("/")
+        html = resp.data.decode("utf-8")
+        assert "<iframe" not in html.lower()
+
+    def test_no_form_with_target_attribute(self, client):
+        """A form with target= sends the response to a frame, not the browser."""
+        resp = client.get("/")
+        html = resp.data.decode("utf-8")
+        # No <form ... target=...> pattern
+        assert 'target=' not in html.lower().split('<script')[0]
+
+    def test_uses_xhr_or_fetch_for_upload(self, client):
+        """Upload must use XHR/fetch to receive blob and trigger download via JS."""
+        resp = client.get("/")
+        html = resp.data.decode("utf-8")
+        script = html.split("<script>")[1].split("</script>")[0]
+        uses_xhr = "XMLHttpRequest" in script
+        uses_fetch = "fetch(" in script
+        assert uses_xhr or uses_fetch, "Must use XHR or fetch for upload"
+
+    def test_uses_blob_download(self, client):
+        """Response must be handled as a blob and trigger download via <a>.click()."""
+        resp = client.get("/")
+        html = resp.data.decode("utf-8")
+        script = html.split("<script>")[1].split("</script>")[0]
+        assert "createObjectURL" in script, "Must create object URL from blob"
+        assert ".download" in script, "Must set download filename on <a> element"
+        assert ".click()" in script, "Must programmatically click to trigger download"
+
+    def test_file_input_accepts_only_pdf(self, client):
+        resp = client.get("/")
+        html = resp.data.decode("utf-8")
+        assert 'accept=".pdf"' in html
+
+    def test_submit_button_starts_disabled(self, client):
+        resp = client.get("/")
+        html = resp.data.decode("utf-8")
+        assert "disabled" in html.split("submitBtn")[0].split("<button")[-1] or \
+               "disabled" in html.split("id=\"submitBtn\"")[1].split(">")[0]
+
+    def test_has_loading_spinner_css(self, client):
+        resp = client.get("/")
+        html = resp.data.decode("utf-8")
+        assert ".spinner" in html
+        assert "@keyframes spin" in html
+
+    def test_has_error_and_success_message_styles(self, client):
+        resp = client.get("/")
+        html = resp.data.decode("utf-8")
+        assert ".message.error" in html
+        assert ".message.success" in html
+
+    def test_handles_xhr_errors(self, client):
+        """JS must handle onerror and ontimeout for robustness."""
+        resp = client.get("/")
+        html = resp.data.decode("utf-8")
+        script = html.split("<script>")[1].split("</script>")[0]
+        assert "onerror" in script, "Must handle network errors"
+        assert "ontimeout" in script or "AbortError" in script, "Must handle timeouts"
+
+
+# ──────────────────────────────────────────────
+# 7. End-to-end: full pipeline test
 # ──────────────────────────────────────────────
 
 class TestEndToEnd:
