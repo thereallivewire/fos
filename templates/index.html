@@ -253,7 +253,10 @@
             formData.append('pdf', selectedFile);
 
             try {
-                const resp = await fetch('/upload', { method: 'POST', body: formData });
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 120000);
+                const resp = await fetch('/upload', { method: 'POST', body: formData, signal: controller.signal });
+                clearTimeout(timeoutId);
 
                 if (!resp.ok) {
                     const err = await resp.json();
@@ -274,7 +277,11 @@
 
                 showMessage('Calendar file downloaded! Import it into your calendar app.', 'success');
             } catch (e) {
-                showMessage('Network error. Please try again.', 'error');
+                if (e.name === 'AbortError') {
+                    showMessage('Request timed out. The PDF may be too large or complex. Please try again.', 'error');
+                } else {
+                    showMessage('Network error. Please try again.', 'error');
+                }
             }
 
             setLoading(false);

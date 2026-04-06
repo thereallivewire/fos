@@ -94,9 +94,13 @@ def extract_events_with_llm(text: str) -> list[dict]:
     if os.environ.get("MOCK_LLM"):
         return MOCK_EVENTS
 
+    # Truncate to ~50k chars to avoid slow/failed API calls on huge PDFs
+    if len(text) > 50000:
+        text = text[:50000] + "\n\n[... truncated ...]"
+
     import anthropic
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=120.0)
     message = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=4096,
