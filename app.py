@@ -193,17 +193,22 @@ def upload():
     print(f"[UPLOAD] POST /upload received", flush=True)
     print(f"[UPLOAD] content-length: {request.content_length}", flush=True)
     print(f"[UPLOAD] content-type: {request.content_type}", flush=True)
-    print(f"[UPLOAD] files keys: {list(request.files.keys())}", flush=True)
+    try:
+        files_keys = list(request.files.keys())
+        print(f"[UPLOAD] files keys: {files_keys}", flush=True)
+    except Exception as e:
+        print(f"[UPLOAD] ERROR accessing request.files: {e}", flush=True)
+        import traceback; traceback.print_exc()
 
     file = request.files.get("pdf")
     print(f"[UPLOAD] file object: {file}", flush=True)
-    print(f"[UPLOAD] filename: {file.filename if file else 'N/A'}", flush=True)
+    print(f"[UPLOAD] filename: '{file.filename}' (len={len(file.filename)})" if file else "[UPLOAD] file is None", flush=True)
 
-    if not file:
-        print("[UPLOAD] FAIL: no file in request", flush=True)
+    if not file or not file.filename:
+        print(f"[UPLOAD] FAIL: no file or empty filename", flush=True)
         return {"error": "Please upload a PDF file."}, 400
     if not file.filename.lower().endswith(".pdf"):
-        print(f"[UPLOAD] FAIL: not a PDF: {file.filename}", flush=True)
+        print(f"[UPLOAD] FAIL: not a PDF: '{file.filename}'", flush=True)
         return {"error": "Please upload a PDF file."}, 400
 
     log.info("File received: %s", file.filename)
