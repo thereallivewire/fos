@@ -302,7 +302,7 @@ def _get_local_ip():
 
 
 if __name__ == "__main__":
-    port = 5000
+    port = 8080
     local_ip = _get_local_ip()
     print(f"\n  Local:   http://127.0.0.1:{port}")
     print(f"  Network: http://{local_ip}:{port}\n")
