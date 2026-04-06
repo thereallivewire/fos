@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta
 
 import pdfplumber
-from flask import Flask, Response, render_template, request
+from flask import Flask, Response, redirect, render_template, request
 
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -197,26 +197,25 @@ def generate_ics(events: list[dict]) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
-def _error_response(msg: str) -> Response:
-    """Return a JSON error that the iframe JS can parse."""
-    return Response(
-        json.dumps({"error": msg}),
-        mimetype="application/json",
-    )
+def _error_redirect(msg: str):
+    """Redirect back to index with an error message in the query string."""
+    from urllib.parse import quote
+    return redirect(f"/?error={quote(msg)}")
 
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    error = request.args.get("error")
+    return render_template("index.html", error=error)
 
 
 @app.route("/upload", methods=["POST"])
 def upload():
     file = request.files.get("pdf")
     if not file or not file.filename:
-        return _error_response("Please upload a PDF file."), 400
+        return _error_redirect("Please upload a PDF file.")
     if not file.filename.lower().endswith(".pdf"):
-        return _error_response("Please upload a PDF file."), 400
+        return _error_redirect("Please upload a PDF file.")
 
     log.info("File received: %s", file.filename)
 
@@ -229,29 +228,29 @@ def upload():
         log.info("Saved to temp file: %s (%d bytes)", tmp.name, file_size)
 
         if not is_valid_pdf(tmp.name):
-            return _error_response("Invalid or corrupt PDF file."), 400
+            return _error_redirect("Invalid or corrupt PDF file.")
 
         log.info("Extracting text from PDF...")
         text = extract_text_from_pdf(tmp.name)
         log.info("Extracted %d characters of text", len(text))
         if not text.strip():
             log.warning("No text extracted from PDF")
-            return _error_response("Could not extract text from the PDF. The file may be image-based or empty."), 400
+            return _error_redirect("Could not extract text from the PDF. The file may be image-based or empty.")
 
         log.info("Calling LLM for event extraction...")
         events = extract_events_with_llm(text)
         log.info("LLM returned %d events", len(events))
         if not events:
-            return _error_response("No events could be extracted from the PDF."), 400
+            return _error_redirect("No events could be extracted from the PDF.")
 
         log.info("Rendering preview page...")
         return render_template("preview.html", events=events, events_json=json.dumps(events))
     except json.JSONDecodeError as e:
         log.exception("JSON decode error: %s", e)
-        return _error_response("Failed to parse the extracted events. Please try again."), 500
+        return _error_redirect("Failed to parse the extracted events. Please try again.")
     except Exception as e:
         log.exception("Unexpected error: %s", e)
-        return _error_response(f"An error occurred: {str(e)}"), 500
+        return _error_redirect(f"An error occurred: {str(e)}")
     finally:
         if tmp:
             try:
@@ -264,11 +263,11 @@ def upload():
 def confirm():
     events_json = request.form.get("events")
     if not events_json:
-        return _error_response("No events data received."), 400
+        return _error_redirect("No events data received.")
     try:
         events = json.loads(events_json)
     except json.JSONDecodeError:
-        return _error_response("Invalid events data."), 400
+        return _error_redirect("Invalid events data.")
 
     ics_content = generate_ics(events)
     log.info("iCal generated (%d bytes). Returning download.", len(ics_content))

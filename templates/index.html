@@ -156,17 +156,22 @@
         <h1>Family OS</h1>
         <p class="subtitle">Upload a Quintalplan PDF and get a calendar file (.ics) you can import into Google Calendar, Apple Calendar, or Outlook.</p>
 
-        <div class="upload-area" id="dropZone">
-            <div class="upload-icon">&#128196;</div>
-            <p class="upload-text">Drag & drop your PDF here, or click to browse</p>
-            <p class="file-name" id="fileName"></p>
-            <input type="file" id="fileInput" accept=".pdf">
-        </div>
+        <form method="POST" action="/upload" enctype="multipart/form-data" id="uploadForm">
+            <div class="upload-area" id="dropZone">
+                <div class="upload-icon">&#128196;</div>
+                <p class="upload-text">Drag & drop your PDF here, or click to browse</p>
+                <p class="file-name" id="fileName"></p>
+                <input type="file" id="fileInput" name="pdf" accept=".pdf">
+            </div>
 
-        <button id="submitBtn" disabled>
-            <span id="btnText">Extract Events & Download .ics</span>
-        </button>
+            <button type="submit" id="submitBtn" disabled>
+                <span id="btnText">Extract Events & Download .ics</span>
+            </button>
+        </form>
 
+        {% if error %}
+        <div class="message error">{{ error }}</div>
+        {% endif %}
         <div id="message" class="message" style="display: none;"></div>
 
         <div class="steps">
@@ -185,9 +190,7 @@
         const fileName = document.getElementById('fileName');
         const submitBtn = document.getElementById('submitBtn');
         const btnText = document.getElementById('btnText');
-        const messageEl = document.getElementById('message');
-
-        let selectedFile = null;
+        const uploadForm = document.getElementById('uploadForm');
 
         dropZone.addEventListener('click', () => fileInput.click());
 
@@ -205,15 +208,14 @@
             dropZone.classList.remove('dragover');
             const file = e.dataTransfer.files[0];
             if (file && file.type === 'application/pdf') {
-                selectedFile = file;
+                fileInput.files = e.dataTransfer.files;
                 onFileSelected(file);
             }
         });
 
         fileInput.addEventListener('change', () => {
             if (fileInput.files[0]) {
-                selectedFile = fileInput.files[0];
-                onFileSelected(selectedFile);
+                onFileSelected(fileInput.files[0]);
             }
         });
 
@@ -221,82 +223,11 @@
             fileName.textContent = file.name;
             dropZone.classList.add('has-file');
             submitBtn.disabled = false;
-            hideMessage();
         }
 
-        function showMessage(text, type) {
-            messageEl.textContent = text;
-            messageEl.className = 'message ' + type;
-            messageEl.style.display = 'block';
-        }
-
-        function hideMessage() {
-            messageEl.style.display = 'none';
-        }
-
-        function setLoading(loading) {
-            submitBtn.disabled = loading;
-            if (loading) {
-                btnText.innerHTML = '<span class="spinner"></span> Extracting events...';
-            } else {
-                btnText.textContent = 'Extract Events & Download .ics';
-                if (selectedFile) submitBtn.disabled = false;
-            }
-        }
-
-        submitBtn.addEventListener('click', () => {
-            if (!selectedFile) return;
-
-            setLoading(true);
-            hideMessage();
-
-            const formData = new FormData();
-            formData.append('pdf', selectedFile);
-
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/upload');
-            xhr.responseType = 'blob';
-            xhr.timeout = 120000;
-
-            xhr.onload = function() {
-                setLoading(false);
-                if (xhr.status === 200) {
-                    const blob = xhr.response;
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'quintalplan.ics';
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    URL.revokeObjectURL(url);
-                    showMessage('Calendar file downloaded! Import it into your calendar app.', 'success');
-                } else {
-                    // Try to read error JSON from the blob response
-                    const reader = new FileReader();
-                    reader.onload = function() {
-                        try {
-                            const data = JSON.parse(reader.result);
-                            showMessage(data.error || 'Something went wrong.', 'error');
-                        } catch (e) {
-                            showMessage('Something went wrong. Please try again.', 'error');
-                        }
-                    };
-                    reader.readAsText(xhr.response);
-                }
-            };
-
-            xhr.onerror = function() {
-                setLoading(false);
-                showMessage('Network error. Please try again.', 'error');
-            };
-
-            xhr.ontimeout = function() {
-                setLoading(false);
-                showMessage('Request timed out. The PDF may be too large or complex.', 'error');
-            };
-
-            xhr.send(formData);
+        uploadForm.addEventListener('submit', () => {
+            submitBtn.disabled = true;
+            btnText.innerHTML = '<span class="spinner"></span> Extracting events...';
         });
     </script>
 </body>

@@ -357,19 +357,25 @@ class TestIndexRoute:
         assert b"Family OS" in resp.data
         assert b"Quintalplan" in resp.data
 
+    def test_error_query_param_shown_in_page(self, client):
+        """GET /?error=Something+went+wrong should display the error message."""
+        resp = client.get("/?error=Something+went+wrong")
+        assert resp.status_code == 200
+        assert b"Something went wrong" in resp.data
+
 
 class TestUploadRoute:
-    def test_post_without_file_returns_400(self, client):
+    def test_post_without_file_redirects_with_error(self, client):
         resp = client.post("/upload")
-        assert resp.status_code == 400
-        data = json.loads(resp.data)
-        assert "error" in data
+        assert resp.status_code == 302
+        assert "error=" in resp.headers["Location"]
 
-    def test_post_with_non_pdf_returns_400(self, client):
+    def test_post_with_non_pdf_redirects_with_error(self, client):
         resp = client.post("/upload", data={
             "pdf": (io.BytesIO(b"not a pdf"), "test.txt"),
         }, content_type="multipart/form-data")
-        assert resp.status_code == 400
+        assert resp.status_code == 302
+        assert "error=" in resp.headers["Location"]
 
     def test_post_with_valid_pdf_returns_preview_html(self, client):
         """Upload now returns a preview page, not a direct .ics download."""
@@ -397,32 +403,33 @@ class TestUploadRoute:
         assert "Herbstferien" in ics_text
         assert "Weihnachtsfeier" in ics_text
 
-    def test_empty_pdf_returns_400(self, client):
+    def test_empty_pdf_redirects_with_error(self, client):
         pdf_bytes = make_pdf("")
         resp = client.post("/upload", data={
             "pdf": (io.BytesIO(pdf_bytes), "empty.pdf"),
         }, content_type="multipart/form-data")
-        assert resp.status_code == 400
-        data = json.loads(resp.data)
-        assert "error" in data
+        assert resp.status_code == 302
+        assert "error=" in resp.headers["Location"]
 
-    def test_corrupt_pdf_returns_400(self, client):
+    def test_corrupt_pdf_redirects_with_error(self, client):
         resp = client.post("/upload", data={
             "pdf": (io.BytesIO(b"not a pdf at all"), "corrupt.pdf"),
         }, content_type="multipart/form-data")
-        assert resp.status_code == 400
-        data = json.loads(resp.data)
-        assert "error" in data
-        assert "invalid" in data["error"].lower() or "corrupt" in data["error"].lower()
+        assert resp.status_code == 302
+        assert "error=" in resp.headers["Location"]
+        # Error message should mention invalid/corrupt
+        from urllib.parse import urlparse, parse_qs
+        loc = resp.headers["Location"]
+        error_msg = parse_qs(urlparse(loc).query)["error"][0].lower()
+        assert "invalid" in error_msg or "corrupt" in error_msg
 
-    def test_truncated_pdf_returns_400(self, client):
+    def test_truncated_pdf_redirects_with_error(self, client):
         truncated = make_pdf("Test")[:50]
         resp = client.post("/upload", data={
             "pdf": (io.BytesIO(truncated), "truncated.pdf"),
         }, content_type="multipart/form-data")
-        assert resp.status_code == 400
-        data = json.loads(resp.data)
-        assert "error" in data
+        assert resp.status_code == 302
+        assert "error=" in resp.headers["Location"]
 
 
 # ──────────────────────────────────────────────
@@ -506,13 +513,15 @@ class TestPreviewFlow:
         assert b"Elternabend" in resp.data
         assert "quintalplan.ics" in resp.headers.get("Content-Disposition", "")
 
-    def test_confirm_with_invalid_json_returns_400(self, client):
+    def test_confirm_with_invalid_json_redirects_with_error(self, client):
         resp = client.post("/confirm", data={"events": "not valid json {"})
-        assert resp.status_code == 400
+        assert resp.status_code == 302
+        assert "error=" in resp.headers["Location"]
 
-    def test_confirm_with_missing_events_returns_400(self, client):
+    def test_confirm_with_missing_events_redirects_with_error(self, client):
         resp = client.post("/confirm")
-        assert resp.status_code == 400
+        assert resp.status_code == 302
+        assert "error=" in resp.headers["Location"]
 
 
 # ──────────────────────────────────────────────
@@ -520,8 +529,7 @@ class TestPreviewFlow:
 # ──────────────────────────────────────────────
 
 class TestFrontendHtml:
-    """Tests that inspect the rendered HTML to catch structural issues
-    like the iframe bug where downloads were swallowed silently."""
+    """Tests that inspect the rendered HTML to catch structural issues."""
 
     def test_no_iframe_in_page(self, client):
         """An iframe target swallows file downloads instead of saving them."""
@@ -536,28 +544,34 @@ class TestFrontendHtml:
         # No <form ... target=...> pattern
         assert 'target=' not in html.lower().split('<script')[0]
 
-    def test_uses_xhr_or_fetch_for_upload(self, client):
-        """Upload must use XHR/fetch to receive blob and trigger download via JS."""
+    def test_upload_form_uses_plain_post(self, client):
+        """Upload must use a plain <form> POST, not XHR/fetch."""
         resp = client.get("/")
-        html = resp.data.decode("utf-8")
-        script = html.split("<script>")[1].split("</script>")[0]
-        uses_xhr = "XMLHttpRequest" in script
-        uses_fetch = "fetch(" in script
-        assert uses_xhr or uses_fetch, "Must use XHR or fetch for upload"
+        html = resp.data.decode("utf-8").lower()
+        assert 'action="/upload"' in html
+        assert 'method="post"' in html
+        assert 'enctype="multipart/form-data"' in html
 
-    def test_uses_blob_download(self, client):
-        """Response must be handled as a blob and trigger download via <a>.click()."""
+    def test_no_xhr_or_fetch_for_upload(self, client):
+        """Upload must NOT use XHR or fetch — plain form submit only."""
         resp = client.get("/")
         html = resp.data.decode("utf-8")
-        script = html.split("<script>")[1].split("</script>")[0]
-        assert "createObjectURL" in script, "Must create object URL from blob"
-        assert ".download" in script, "Must set download filename on <a> element"
-        assert ".click()" in script, "Must programmatically click to trigger download"
+        scripts = html.split("<script>")
+        if len(scripts) > 1:
+            script = scripts[1].split("</script>")[0]
+            assert "XMLHttpRequest" not in script, "Must not use XHR for upload"
+            assert "fetch(" not in script, "Must not use fetch for upload"
 
     def test_file_input_accepts_only_pdf(self, client):
         resp = client.get("/")
         html = resp.data.decode("utf-8")
         assert 'accept=".pdf"' in html
+
+    def test_file_input_has_name_pdf(self, client):
+        """File input must have name='pdf' for the plain form POST."""
+        resp = client.get("/")
+        html = resp.data.decode("utf-8")
+        assert 'name="pdf"' in html
 
     def test_submit_button_starts_disabled(self, client):
         resp = client.get("/")
@@ -576,14 +590,6 @@ class TestFrontendHtml:
         html = resp.data.decode("utf-8")
         assert ".message.error" in html
         assert ".message.success" in html
-
-    def test_handles_xhr_errors(self, client):
-        """JS must handle onerror and ontimeout for robustness."""
-        resp = client.get("/")
-        html = resp.data.decode("utf-8")
-        script = html.split("<script>")[1].split("</script>")[0]
-        assert "onerror" in script, "Must handle network errors"
-        assert "ontimeout" in script or "AbortError" in script, "Must handle timeouts"
 
 
 # ──────────────────────────────────────────────
@@ -762,7 +768,7 @@ class TestRealHttpEndToEnd:
             os.unlink(ics_path)
 
     def test_real_http_error_for_non_pdf(self, live_server):
-        """Upload a non-PDF file over real HTTP — must return 400 error."""
+        """Upload a non-PDF file over real HTTP — must redirect with error."""
         boundary = "----TestBoundary7MA4YWxkTrZu0gW"
         body = (
             f"--{boundary}\r\n"
@@ -778,8 +784,16 @@ class TestRealHttpEndToEnd:
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
             method="POST",
         )
+        # Disable auto-redirect to check the 302 response
+        import urllib.request as ur
+        opener = ur.build_opener(ur.HTTPHandler)
+        class NoRedirect(ur.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                raise urllib.error.HTTPError(newurl, code, msg, headers, fp)
+        opener = ur.build_opener(NoRedirect)
         try:
-            urllib.request.urlopen(req, timeout=10)
-            assert False, "Should have raised HTTPError"
+            opener.open(req, timeout=10)
+            assert False, "Should have been redirected"
         except urllib.error.HTTPError as e:
-            assert e.code == 400
+            assert e.code == 302
+            assert "error=" in e.headers.get("Location", "")
