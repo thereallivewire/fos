@@ -165,7 +165,7 @@
             </div>
 
             <button type="submit" id="submitBtn" disabled>
-                <span id="btnText">Extract Events & Download .ics</span>
+                <span id="btnText">Preview Events</span>
             </button>
         </form>
 
@@ -227,7 +227,7 @@
 
         uploadForm.addEventListener('submit', () => {
             submitBtn.disabled = true;
-            btnText.innerHTML = '<span class="spinner"></span> Extracting events...';
+            btnText.innerHTML = '<span class="spinner"></span> Loading preview...';
         });
     </script>
 </body>
