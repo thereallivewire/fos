@@ -79,6 +79,7 @@
         .time-cell { white-space: nowrap; color: #9ca3af; font-size: 0.82rem; }
         .title-cell { font-weight: 500; }
         .desc-cell { color: #6b7280; font-size: 0.85rem; }
+        .translation { color: #9ca3af; font-size: 0.82rem; margin-top: 0.15rem; }
 
         .actions {
             display: flex;
@@ -141,8 +142,14 @@
                     <td class="time-cell">
                         {% if e.time_start %}{{ e.time_start }}{% if e.time_end %} – {{ e.time_end }}{% endif %}{% endif %}
                     </td>
-                    <td class="title-cell">{{ e.title }}</td>
-                    <td class="desc-cell">{{ e.description or '' }}</td>
+                    <td class="title-cell">
+                        {{ e.title }}
+                        {% if e.title_en %}<div class="translation">{{ e.title_en }}</div>{% endif %}
+                    </td>
+                    <td class="desc-cell">
+                        {{ e.description or '' }}
+                        {% if e.description_en %}<div class="translation">{{ e.description_en }}</div>{% endif %}
+                    </td>
                 </tr>
             {% endfor %}
             </tbody>

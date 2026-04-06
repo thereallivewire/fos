@@ -154,6 +154,16 @@ class TestExtractEventsWithLlm:
             assert len(parts) == 3
             assert len(parts[0]) == 4
 
+    def test_mock_events_have_english_translation_fields(self):
+        """Each event should have title_en (English translation or null if already English)."""
+        events = extract_events_with_llm("any text")
+        for event in events:
+            assert "title_en" in event
+        # German events should have non-null title_en
+        elternabend = [e for e in events if "Elternabend" in e["title"]][0]
+        assert elternabend["title_en"] is not None
+        assert "parent" in elternabend["title_en"].lower() or "evening" in elternabend["title_en"].lower()
+
 
 # ──────────────────────────────────────────────
 # 4. Unit tests: generate_ics
@@ -450,6 +460,20 @@ class TestPreviewFlow:
         assert "Elternabend" in html
         assert "Herbstferien" in html
         assert "Weihnachtsfeier" in html
+
+    def test_preview_shows_english_translations(self, client):
+        """Preview should show English translations below German event titles."""
+        pdf_bytes = make_pdf(SAMPLE_QUINTALPLAN_TEXT)
+        resp = client.post("/upload", data={
+            "pdf": (io.BytesIO(pdf_bytes), "quintalplan.pdf"),
+        }, content_type="multipart/form-data")
+        html = resp.data.decode("utf-8")
+        # Should show both the German title and English translation
+        assert "Elternabend" in html
+        # The English translation should appear somewhere in the preview
+        from app import MOCK_EVENTS
+        elternabend = [e for e in MOCK_EVENTS if "Elternabend" in e["title"]][0]
+        assert elternabend["title_en"] in html
 
     def test_preview_shows_event_count(self, client):
         pdf_bytes = make_pdf(SAMPLE_QUINTALPLAN_TEXT)

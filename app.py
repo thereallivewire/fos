@@ -35,45 +35,55 @@ should have both date and end_date
 Return ONLY a JSON array. No markdown fences, no explanation. Each object:
 {
   "title": "Event name in original language",
+  "title_en": "English translation of title, or null if already in English",
   "date": "YYYY-MM-DD",
   "end_date": "YYYY-MM-DD or null",
   "time_start": "HH:MM or null",
   "time_end": "HH:MM or null",
-  "description": "Additional details or null"
+  "description": "Additional details or null",
+  "description_en": "English translation of description, or null if already in English or description is null"
 }"""
 
 MOCK_EVENTS = [
     {
         "title": "Elternabend Klasse 3a",
+        "title_en": "Parent evening class 3a",
         "date": "2025-09-15",
         "end_date": None,
         "time_start": "19:00",
         "time_end": "21:00",
         "description": "Elternabend im Klassenzimmer",
+        "description_en": "Parent evening in the classroom",
     },
     {
         "title": "Herbstferien",
+        "title_en": "Autumn holidays",
         "date": "2025-10-20",
         "end_date": "2025-11-01",
         "time_start": None,
         "time_end": None,
         "description": None,
+        "description_en": None,
     },
     {
         "title": "Schulfotograf",
+        "title_en": "School photographer",
         "date": "2025-11-05",
         "end_date": None,
         "time_start": "08:00",
         "time_end": "12:00",
         "description": "Bitte an ordentliche Kleidung denken",
+        "description_en": "Please remember to wear neat clothing",
     },
     {
         "title": "Weihnachtsfeier",
+        "title_en": "Christmas party",
         "date": "2025-12-19",
         "end_date": None,
         "time_start": "10:00",
         "time_end": "12:00",
         "description": None,
+        "description_en": None,
     },
 ]
 
