@@ -183,6 +183,14 @@ def generate_ics(events: list[dict]) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
+def _error_response(msg: str) -> Response:
+    """Return a JSON error that the iframe JS can parse."""
+    return Response(
+        json.dumps({"error": msg}),
+        mimetype="application/json",
+    )
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -206,10 +214,10 @@ def upload():
 
     if not file or not file.filename:
         print(f"[UPLOAD] FAIL: no file or empty filename", flush=True)
-        return {"error": "Please upload a PDF file."}, 400
+        return _error_response("Please upload a PDF file."), 400
     if not file.filename.lower().endswith(".pdf"):
         print(f"[UPLOAD] FAIL: not a PDF: '{file.filename}'", flush=True)
-        return {"error": "Please upload a PDF file."}, 400
+        return _error_response("Please upload a PDF file."), 400
 
     log.info("File received: %s", file.filename)
 
@@ -226,13 +234,13 @@ def upload():
         log.info("Extracted %d characters of text", len(text))
         if not text.strip():
             log.warning("No text extracted from PDF")
-            return {"error": "Could not extract text from the PDF. The file may be image-based or empty."}, 400
+            return _error_response("Could not extract text from the PDF. The file may be image-based or empty."), 400
 
         log.info("Calling LLM for event extraction...")
         events = extract_events_with_llm(text)
         log.info("LLM returned %d events", len(events))
         if not events:
-            return {"error": "No events could be extracted from the PDF."}, 400
+            return _error_response("No events could be extracted from the PDF."), 400
 
         log.info("Generating iCal file...")
         ics_content = generate_ics(events)
@@ -245,10 +253,10 @@ def upload():
         )
     except json.JSONDecodeError as e:
         log.exception("JSON decode error: %s", e)
-        return {"error": "Failed to parse the extracted events. Please try again."}, 500
+        return _error_response("Failed to parse the extracted events. Please try again."), 500
     except Exception as e:
         log.exception("Unexpected error: %s", e)
-        return {"error": f"An error occurred: {str(e)}"}, 500
+        return _error_response(f"An error occurred: {str(e)}"), 500
     finally:
         if tmp:
             try:

@@ -156,16 +156,20 @@
         <h1>Family OS</h1>
         <p class="subtitle">Upload a Quintalplan PDF and get a calendar file (.ics) you can import into Google Calendar, Apple Calendar, or Outlook.</p>
 
-        <div class="upload-area" id="dropZone">
-            <div class="upload-icon">&#128196;</div>
-            <p class="upload-text">Drag & drop your PDF here, or click to browse</p>
-            <p class="file-name" id="fileName"></p>
-            <input type="file" id="fileInput" accept=".pdf">
-        </div>
+        <form id="uploadForm" action="/upload" method="POST" enctype="multipart/form-data" target="downloadFrame">
+            <div class="upload-area" id="dropZone">
+                <div class="upload-icon">&#128196;</div>
+                <p class="upload-text">Drag & drop your PDF here, or click to browse</p>
+                <p class="file-name" id="fileName"></p>
+                <input type="file" id="fileInput" name="pdf" accept=".pdf">
+            </div>
 
-        <button id="submitBtn" disabled>
-            <span id="btnText">Extract Events & Download .ics</span>
-        </button>
+            <button type="submit" id="submitBtn" disabled>
+                <span id="btnText">Extract Events & Download .ics</span>
+            </button>
+        </form>
+
+        <iframe name="downloadFrame" id="downloadFrame" style="display:none;"></iframe>
 
         <div id="message" class="message" style="display: none;"></div>
 
@@ -186,9 +190,10 @@
         const submitBtn = document.getElementById('submitBtn');
         const btnText = document.getElementById('btnText');
         const messageEl = document.getElementById('message');
+        const uploadForm = document.getElementById('uploadForm');
+        const downloadFrame = document.getElementById('downloadFrame');
 
-        let selectedFile = null;
-
+        // Clicking the drop zone opens the file picker
         dropZone.addEventListener('click', () => fileInput.click());
 
         dropZone.addEventListener('dragover', (e) => {
@@ -205,18 +210,21 @@
             dropZone.classList.remove('dragover');
             const file = e.dataTransfer.files[0];
             if (file && file.type === 'application/pdf') {
-                setFile(file);
+                // Set the dropped file onto the real file input via DataTransfer
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                fileInput.files = dt.files;
+                onFileSelected(file);
             }
         });
 
         fileInput.addEventListener('change', () => {
             if (fileInput.files[0]) {
-                setFile(fileInput.files[0]);
+                onFileSelected(fileInput.files[0]);
             }
         });
 
-        function setFile(file) {
-            selectedFile = file;
+        function onFileSelected(file) {
             fileName.textContent = file.name;
             dropZone.classList.add('has-file');
             submitBtn.disabled = false;
@@ -233,58 +241,34 @@
             messageEl.style.display = 'none';
         }
 
-        function setLoading(loading) {
-            submitBtn.disabled = loading;
-            if (loading) {
-                btnText.innerHTML = '<span class="spinner"></span> Extracting events...';
-            } else {
-                btnText.textContent = 'Extract Events & Download .ics';
-                if (selectedFile) submitBtn.disabled = false;
-            }
-        }
-
-        submitBtn.addEventListener('click', async () => {
-            if (!selectedFile) return;
-
-            setLoading(true);
+        // On form submit, show spinner. The form POSTs natively into the hidden iframe.
+        uploadForm.addEventListener('submit', () => {
+            submitBtn.disabled = true;
+            btnText.innerHTML = '<span class="spinner"></span> Extracting events...';
             hideMessage();
+        });
 
-            const formData = new FormData();
-            formData.append('pdf', selectedFile);
+        // When the iframe loads (form response received), check for errors
+        downloadFrame.addEventListener('load', () => {
+            // Reset button state
+            btnText.textContent = 'Extract Events & Download .ics';
+            if (fileInput.files[0]) submitBtn.disabled = false;
 
+            // Try to read iframe content (only works for error JSON, not file downloads)
             try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 120000);
-                const resp = await fetch('/upload', { method: 'POST', body: formData, signal: controller.signal });
-                clearTimeout(timeoutId);
-
-                if (!resp.ok) {
-                    const err = await resp.json();
-                    showMessage(err.error || 'Something went wrong.', 'error');
-                    setLoading(false);
-                    return;
+                const body = downloadFrame.contentDocument.body.innerText;
+                if (body) {
+                    const data = JSON.parse(body);
+                    if (data.error) {
+                        showMessage(data.error, 'error');
+                        return;
+                    }
                 }
-
-                const blob = await resp.blob();
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'quintalplan.ics';
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                URL.revokeObjectURL(url);
-
-                showMessage('Calendar file downloaded! Import it into your calendar app.', 'success');
             } catch (e) {
-                if (e.name === 'AbortError') {
-                    showMessage('Request timed out. The PDF may be too large or complex. Please try again.', 'error');
-                } else {
-                    showMessage('Network error. Please try again.', 'error');
-                }
+                // If we can't read it, the download likely triggered successfully
             }
 
-            setLoading(false);
+            showMessage('Calendar file downloaded! Import it into your calendar app.', 'success');
         });
     </script>
 </body>
