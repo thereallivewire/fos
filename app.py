@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import tempfile
 import uuid
@@ -6,6 +7,9 @@ from datetime import datetime, timedelta
 
 import pdfplumber
 from flask import Flask, Response, render_template, request
+
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB
@@ -186,34 +190,55 @@ def index():
 
 @app.route("/upload", methods=["POST"])
 def upload():
+    log.info("POST /upload received")
+    log.debug("Request content-length: %s", request.content_length)
+    log.debug("Request content-type: %s", request.content_type)
+
     file = request.files.get("pdf")
-    if not file or not file.filename.lower().endswith(".pdf"):
+    if not file:
+        log.warning("No file in request. Keys: %s", list(request.files.keys()))
         return {"error": "Please upload a PDF file."}, 400
+    if not file.filename.lower().endswith(".pdf"):
+        log.warning("Non-PDF file uploaded: %s", file.filename)
+        return {"error": "Please upload a PDF file."}, 400
+
+    log.info("File received: %s", file.filename)
 
     tmp = None
     try:
         tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
         file.save(tmp.name)
         tmp.close()
+        file_size = os.path.getsize(tmp.name)
+        log.info("Saved to temp file: %s (%d bytes)", tmp.name, file_size)
 
+        log.info("Extracting text from PDF...")
         text = extract_text_from_pdf(tmp.name)
+        log.info("Extracted %d characters of text", len(text))
         if not text.strip():
+            log.warning("No text extracted from PDF")
             return {"error": "Could not extract text from the PDF. The file may be image-based or empty."}, 400
 
+        log.info("Calling LLM for event extraction...")
         events = extract_events_with_llm(text)
+        log.info("LLM returned %d events", len(events))
         if not events:
             return {"error": "No events could be extracted from the PDF."}, 400
 
+        log.info("Generating iCal file...")
         ics_content = generate_ics(events)
+        log.info("iCal generated (%d bytes). Returning download.", len(ics_content))
 
         return Response(
             ics_content,
             mimetype="text/calendar; charset=utf-8",
             headers={"Content-Disposition": "attachment; filename=quintalplan.ics"},
         )
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        log.exception("JSON decode error: %s", e)
         return {"error": "Failed to parse the extracted events. Please try again."}, 500
     except Exception as e:
+        log.exception("Unexpected error: %s", e)
         return {"error": f"An error occurred: {str(e)}"}, 500
     finally:
         if tmp:
