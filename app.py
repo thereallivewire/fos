@@ -190,16 +190,20 @@ def index():
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    log.info("POST /upload received")
-    log.debug("Request content-length: %s", request.content_length)
-    log.debug("Request content-type: %s", request.content_type)
+    print(f"[UPLOAD] POST /upload received", flush=True)
+    print(f"[UPLOAD] content-length: {request.content_length}", flush=True)
+    print(f"[UPLOAD] content-type: {request.content_type}", flush=True)
+    print(f"[UPLOAD] files keys: {list(request.files.keys())}", flush=True)
 
     file = request.files.get("pdf")
+    print(f"[UPLOAD] file object: {file}", flush=True)
+    print(f"[UPLOAD] filename: {file.filename if file else 'N/A'}", flush=True)
+
     if not file:
-        log.warning("No file in request. Keys: %s", list(request.files.keys()))
+        print("[UPLOAD] FAIL: no file in request", flush=True)
         return {"error": "Please upload a PDF file."}, 400
     if not file.filename.lower().endswith(".pdf"):
-        log.warning("Non-PDF file uploaded: %s", file.filename)
+        print(f"[UPLOAD] FAIL: not a PDF: {file.filename}", flush=True)
         return {"error": "Please upload a PDF file."}, 400
 
     log.info("File received: %s", file.filename)
