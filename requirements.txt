@@ -1,3 +1,5 @@
 flask>=3.0
 pdfplumber>=0.11
 anthropic>=0.49
+pytest>=8.0
+reportlab>=4.0
