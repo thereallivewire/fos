@@ -1,0 +1,223 @@
+import json
+import os
+import tempfile
+import uuid
+from datetime import datetime, timedelta
+
+import pdfplumber
+from flask import Flask, Response, render_template, request
+
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+EXTRACTION_SYSTEM_PROMPT = """\
+You are an expert at extracting calendar events from German school term plans \
+(Quintalplan / Quartalsplan / Schuljahresplan).
+
+Given the raw text extracted from a PDF, identify ALL events, dates, and appointments.
+
+Rules:
+- German date formats: "12.05.2025", "12. Mai 2025", "12.05.", "Mo, 12.05."
+- If only a month/day is given without a year, infer the year from context \
+(school year, surrounding dates, headers)
+- Multi-day events (e.g. "12.-16.05.2025", "Herbstferien 21.10.-01.11.") \
+should have both date and end_date
+- Holidays and vacation periods are events too
+- If a time is mentioned (e.g. "19:00 Uhr", "14.30-16.00"), include it
+- For all-day events, leave time_start and time_end as null
+
+Return ONLY a JSON array. No markdown fences, no explanation. Each object:
+{
+  "title": "Event name in original language",
+  "date": "YYYY-MM-DD",
+  "end_date": "YYYY-MM-DD or null",
+  "time_start": "HH:MM or null",
+  "time_end": "HH:MM or null",
+  "description": "Additional details or null"
+}"""
+
+MOCK_EVENTS = [
+    {
+        "title": "Elternabend Klasse 3a",
+        "date": "2025-09-15",
+        "end_date": None,
+        "time_start": "19:00",
+        "time_end": "21:00",
+        "description": "Elternabend im Klassenzimmer",
+    },
+    {
+        "title": "Herbstferien",
+        "date": "2025-10-20",
+        "end_date": "2025-11-01",
+        "time_start": None,
+        "time_end": None,
+        "description": None,
+    },
+    {
+        "title": "Schulfotograf",
+        "date": "2025-11-05",
+        "end_date": None,
+        "time_start": "08:00",
+        "time_end": "12:00",
+        "description": "Bitte an ordentliche Kleidung denken",
+    },
+    {
+        "title": "Weihnachtsfeier",
+        "date": "2025-12-19",
+        "end_date": None,
+        "time_start": "10:00",
+        "time_end": "12:00",
+        "description": None,
+    },
+]
+
+
+def extract_text_from_pdf(filepath: str) -> str:
+    """Extract text and table data from all pages of a PDF."""
+    parts = []
+    with pdfplumber.open(filepath) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                parts.append(text)
+            for table in page.extract_tables():
+                for row in table:
+                    cells = [c or "" for c in row]
+                    parts.append(" | ".join(cells))
+    return "\n".join(parts)
+
+
+def extract_events_with_llm(text: str) -> list[dict]:
+    """Send extracted PDF text to Claude and get structured event data back."""
+    if os.environ.get("MOCK_LLM"):
+        return MOCK_EVENTS
+
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    message = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4096,
+        system=EXTRACTION_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": text}],
+    )
+
+    raw = message.content[0].text.strip()
+    # Strip markdown fences if present
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1]
+        raw = raw.rsplit("```", 1)[0]
+
+    return json.loads(raw)
+
+
+def ics_escape(text: str) -> str:
+    """Escape special characters per RFC 5545."""
+    return text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def generate_ics(events: list[dict]) -> str:
+    """Generate an RFC 5545 iCalendar string from a list of event dicts."""
+    now = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//FamilyOS//Quintalplan//DE",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "X-WR-CALNAME:Quintalplan",
+        "X-WR-TIMEZONE:Europe/Berlin",
+    ]
+
+    for event in events:
+        date = event["date"].replace("-", "")
+        end_date = event.get("end_date")
+        time_start = event.get("time_start")
+        time_end = event.get("time_end")
+        title = event.get("title", "Unnamed Event")
+        description = event.get("description")
+
+        lines.append("BEGIN:VEVENT")
+        lines.append(f"UID:{uuid.uuid4()}@familyos")
+        lines.append(f"DTSTAMP:{now}")
+
+        if time_start:
+            ts = time_start.replace(":", "") + "00"
+            lines.append(f"DTSTART;TZID=Europe/Berlin:{date}T{ts}")
+            if time_end:
+                te = time_end.replace(":", "") + "00"
+                end_d = (end_date or event["date"]).replace("-", "")
+                lines.append(f"DTEND;TZID=Europe/Berlin:{end_d}T{te}")
+            else:
+                # Default: 1 hour duration
+                lines.append(f"DTEND;TZID=Europe/Berlin:{date}T{ts}")
+        else:
+            # All-day event
+            lines.append(f"DTSTART;VALUE=DATE:{date}")
+            if end_date:
+                # DTEND is exclusive, so add one day
+                ed = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+                lines.append(f"DTEND;VALUE=DATE:{ed.strftime('%Y%m%d')}")
+            else:
+                # Single all-day: DTEND = next day
+                ed = datetime.strptime(event["date"], "%Y-%m-%d") + timedelta(days=1)
+                lines.append(f"DTEND;VALUE=DATE:{ed.strftime('%Y%m%d')}")
+
+        lines.append(f"SUMMARY:{ics_escape(title)}")
+        if description:
+            lines.append(f"DESCRIPTION:{ics_escape(description)}")
+
+        lines.append("END:VEVENT")
+
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines) + "\r\n"
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    file = request.files.get("pdf")
+    if not file or not file.filename.lower().endswith(".pdf"):
+        return {"error": "Please upload a PDF file."}, 400
+
+    tmp = None
+    try:
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        file.save(tmp.name)
+        tmp.close()
+
+        text = extract_text_from_pdf(tmp.name)
+        if not text.strip():
+            return {"error": "Could not extract text from the PDF. The file may be image-based or empty."}, 400
+
+        events = extract_events_with_llm(text)
+        if not events:
+            return {"error": "No events could be extracted from the PDF."}, 400
+
+        ics_content = generate_ics(events)
+
+        return Response(
+            ics_content,
+            mimetype="text/calendar; charset=utf-8",
+            headers={"Content-Disposition": "attachment; filename=quintalplan.ics"},
+        )
+    except json.JSONDecodeError:
+        return {"error": "Failed to parse the extracted events. Please try again."}, 500
+    except Exception as e:
+        return {"error": f"An error occurred: {str(e)}"}, 500
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)
