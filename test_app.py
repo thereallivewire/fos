@@ -5,8 +5,12 @@ Uses red/green TDD: all tests written first, then code fixed to pass.
 
 import io
 import json
+import multiprocessing
 import os
+import socket
 import tempfile
+import time
+import urllib.request
 
 import pytest
 from reportlab.lib.pagesizes import A4
@@ -17,12 +21,45 @@ os.environ["MOCK_LLM"] = "1"
 
 from app import app, extract_text_from_pdf, extract_events_with_llm, generate_ics, ics_escape
 
+FIXTURE_PDF = os.path.join(os.path.dirname(__file__), "tests", "fixtures", "sample_quintalplan.pdf")
+
 
 @pytest.fixture
 def client():
     app.config["TESTING"] = True
     with app.test_client() as c:
         yield c
+
+
+def _get_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
+def _run_server(port):
+    """Run Flask server in a subprocess (for real HTTP tests)."""
+    os.environ["MOCK_LLM"] = "1"
+    app.run(port=port, debug=False, use_reloader=False)
+
+
+@pytest.fixture
+def live_server():
+    """Start a real Flask HTTP server on a random port for true end-to-end tests."""
+    port = _get_free_port()
+    proc = multiprocessing.Process(target=_run_server, args=(port,))
+    proc.start()
+    # Wait for server to be ready
+    url = f"http://127.0.0.1:{port}"
+    for _ in range(50):
+        try:
+            urllib.request.urlopen(url, timeout=1)
+            break
+        except Exception:
+            time.sleep(0.1)
+    yield url
+    proc.terminate()
+    proc.join(timeout=5)
 
 
 def make_pdf(text: str) -> bytes:
@@ -392,10 +429,10 @@ class TestFrontendHtml:
 
 
 # ──────────────────────────────────────────────
-# 7. End-to-end: full pipeline test
+# 7. End-to-end with test client: full pipeline test
 # ──────────────────────────────────────────────
 
-class TestEndToEnd:
+class TestEndToEndTestClient:
     def test_full_pipeline_pdf_to_importable_ics(self, client):
         """Simulate the complete user flow: upload PDF -> get .ics -> validate it."""
         pdf_bytes = make_pdf(SAMPLE_QUINTALPLAN_TEXT)
@@ -438,3 +475,154 @@ class TestEndToEnd:
         lines = ics_text.split("\r\n")
         for line in lines[:-1]:  # last element may be empty
             assert "\n" not in line
+
+    def test_fixture_pdf_upload(self, client):
+        """Upload the real fixture PDF file and get a valid .ics back."""
+        with open(FIXTURE_PDF, "rb") as f:
+            resp = client.post("/upload", data={
+                "pdf": (f, "sample_quintalplan.pdf"),
+            }, content_type="multipart/form-data")
+        assert resp.status_code == 200
+        assert resp.content_type.startswith("text/calendar")
+        ics_text = resp.data.decode("utf-8")
+        assert "BEGIN:VCALENDAR" in ics_text
+        assert ics_text.count("BEGIN:VEVENT") == 4  # MOCK_EVENTS has 4
+
+    def test_fixture_pdf_download_to_file(self, client):
+        """Upload fixture PDF and save .ics to disk — simulates real download."""
+        with open(FIXTURE_PDF, "rb") as f:
+            resp = client.post("/upload", data={
+                "pdf": (f, "sample_quintalplan.pdf"),
+            }, content_type="multipart/form-data")
+        assert resp.status_code == 200
+
+        # Write to a temp file like a browser would (binary mode preserves \r\n)
+        with tempfile.NamedTemporaryFile(suffix=".ics", delete=False) as out:
+            out.write(resp.data)
+            ics_path = out.name
+
+        try:
+            # Read back in binary to verify raw bytes on disk
+            with open(ics_path, "rb") as f:
+                raw = f.read()
+            ics_text = raw.decode("utf-8")
+            assert ics_text.startswith("BEGIN:VCALENDAR\r\n")
+            assert ics_text.strip().endswith("END:VCALENDAR")
+            assert ics_text.count("BEGIN:VEVENT") == 4
+            assert b"\r\n" in raw, "File on disk must have CRLF line endings per RFC 5545"
+            assert os.path.getsize(ics_path) > 100
+        finally:
+            os.unlink(ics_path)
+
+
+# ──────────────────────────────────────────────
+# 8. Real HTTP end-to-end: live server + network upload
+# ──────────────────────────────────────────────
+
+def _build_multipart_body(filepath, field_name="pdf"):
+    """Build a multipart/form-data body for urllib (no requests dependency)."""
+    boundary = "----TestBoundary7MA4YWxkTrZu0gW"
+    filename = os.path.basename(filepath)
+    with open(filepath, "rb") as f:
+        file_data = f.read()
+
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'
+        f"Content-Type: application/pdf\r\n\r\n"
+    ).encode("utf-8") + file_data + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    content_type = f"multipart/form-data; boundary={boundary}"
+    return body, content_type
+
+
+class TestRealHttpEndToEnd:
+    """Tests that start a real Flask HTTP server and make actual network requests.
+    This catches issues that the Flask test client hides, like ClientDisconnected."""
+
+    def test_real_http_upload_returns_ics(self, live_server):
+        """POST a real PDF to the live server and get .ics back over HTTP."""
+        body, content_type = _build_multipart_body(FIXTURE_PDF)
+
+        req = urllib.request.Request(
+            f"{live_server}/upload",
+            data=body,
+            headers={"Content-Type": content_type},
+            method="POST",
+        )
+        resp = urllib.request.urlopen(req, timeout=30)
+
+        assert resp.status == 200
+        assert "text/calendar" in resp.headers.get("Content-Type", "")
+        assert "quintalplan.ics" in resp.headers.get("Content-Disposition", "")
+
+        ics_bytes = resp.read()
+        ics_text = ics_bytes.decode("utf-8")
+        assert ics_text.startswith("BEGIN:VCALENDAR\r\n")
+        assert ics_text.strip().endswith("END:VCALENDAR")
+        assert ics_text.count("BEGIN:VEVENT") == 4
+
+    def test_real_http_download_saves_valid_ics_file(self, live_server):
+        """Full browser simulation: upload PDF over HTTP, save .ics to disk."""
+        body, content_type = _build_multipart_body(FIXTURE_PDF)
+
+        req = urllib.request.Request(
+            f"{live_server}/upload",
+            data=body,
+            headers={"Content-Type": content_type},
+            method="POST",
+        )
+        resp = urllib.request.urlopen(req, timeout=30)
+        assert resp.status == 200
+
+        # Save to disk like a browser download (binary preserves CRLF)
+        raw_bytes = resp.read()
+        with tempfile.NamedTemporaryFile(suffix=".ics", delete=False) as out:
+            out.write(raw_bytes)
+            ics_path = out.name
+
+        try:
+            # Read back in binary to verify raw bytes on disk
+            with open(ics_path, "rb") as f:
+                raw = f.read()
+            ics_text = raw.decode("utf-8")
+
+            # Validate it's a complete, importable .ics file
+            assert ics_text.startswith("BEGIN:VCALENDAR\r\n")
+            assert ics_text.strip().endswith("END:VCALENDAR")
+            assert "VERSION:2.0" in ics_text
+            assert b"\r\n" in raw, "File must have CRLF line endings per RFC 5545"
+            assert ics_text.count("BEGIN:VEVENT") == 4
+            assert ics_text.count("END:VEVENT") == 4
+
+            # Every event must have required fields
+            for vevent in ics_text.split("BEGIN:VEVENT")[1:]:
+                assert "UID:" in vevent
+                assert "DTSTAMP:" in vevent
+                assert "DTSTART" in vevent
+                assert "SUMMARY:" in vevent
+        finally:
+            os.unlink(ics_path)
+
+    def test_real_http_error_for_non_pdf(self, live_server):
+        """Upload a non-PDF file over real HTTP — must return 400 error."""
+        boundary = "----TestBoundary7MA4YWxkTrZu0gW"
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="pdf"; filename="test.txt"\r\n'
+            f"Content-Type: text/plain\r\n\r\n"
+            f"this is not a pdf\r\n"
+            f"--{boundary}--\r\n"
+        ).encode("utf-8")
+
+        req = urllib.request.Request(
+            f"{live_server}/upload",
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, "Should have raised HTTPError"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
