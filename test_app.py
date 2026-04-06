@@ -278,6 +278,60 @@ class TestGenerateIcs:
         for line in lines:
             assert "\n" not in line, f"Bare \\n found in line: {line!r}"
 
+
+# ──────────────────────────────────────────────
+# 4b. Unit tests: is_valid_pdf
+# ──────────────────────────────────────────────
+
+from app import is_valid_pdf
+
+class TestIsValidPdf:
+    def test_valid_pdf_returns_true(self):
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(make_pdf("Schuljahr 2025"))
+            path = f.name
+        try:
+            assert is_valid_pdf(path) is True
+        finally:
+            os.unlink(path)
+
+    def test_empty_file_returns_false(self):
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            path = f.name
+        try:
+            assert is_valid_pdf(path) is False
+        finally:
+            os.unlink(path)
+
+    def test_text_file_returns_false(self):
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(b"this is not a pdf at all")
+            path = f.name
+        try:
+            assert is_valid_pdf(path) is False
+        finally:
+            os.unlink(path)
+
+    def test_truncated_pdf_returns_false(self):
+        pdf_bytes = make_pdf("Test")
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(pdf_bytes[:50])  # truncate to corrupt it
+            path = f.name
+        try:
+            assert is_valid_pdf(path) is False
+        finally:
+            os.unlink(path)
+
+    def test_wrong_extension_content_returns_false(self):
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(b"PK\x03\x04this is actually a zip file")
+            path = f.name
+        try:
+            assert is_valid_pdf(path) is False
+        finally:
+            os.unlink(path)
+
+
     def test_mock_events_produce_valid_ics(self):
         """End-to-end: MOCK_EVENTS -> generate_ics -> valid .ics output."""
         from app import MOCK_EVENTS
@@ -351,6 +405,24 @@ class TestUploadRoute:
         pdf_bytes = make_pdf("")
         resp = client.post("/upload", data={
             "pdf": (io.BytesIO(pdf_bytes), "empty.pdf"),
+        }, content_type="multipart/form-data")
+        assert resp.status_code == 400
+        data = json.loads(resp.data)
+        assert "error" in data
+
+    def test_corrupt_pdf_returns_400(self, client):
+        resp = client.post("/upload", data={
+            "pdf": (io.BytesIO(b"not a pdf at all"), "corrupt.pdf"),
+        }, content_type="multipart/form-data")
+        assert resp.status_code == 400
+        data = json.loads(resp.data)
+        assert "error" in data
+        assert "invalid" in data["error"].lower() or "corrupt" in data["error"].lower()
+
+    def test_truncated_pdf_returns_400(self, client):
+        truncated = make_pdf("Test")[:50]
+        resp = client.post("/upload", data={
+            "pdf": (io.BytesIO(truncated), "truncated.pdf"),
         }, content_type="multipart/form-data")
         assert resp.status_code == 400
         data = json.loads(resp.data)

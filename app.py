@@ -78,6 +78,20 @@ MOCK_EVENTS = [
 ]
 
 
+def is_valid_pdf(filepath: str) -> bool:
+    """Return True only if the file is a readable, non-corrupt PDF."""
+    try:
+        with open(filepath, "rb") as f:
+            header = f.read(5)
+        if header != b"%PDF-":
+            return False
+        with pdfplumber.open(filepath) as pdf:
+            _ = pdf.pages  # force parsing
+        return True
+    except Exception:
+        return False
+
+
 def extract_text_from_pdf(filepath: str) -> str:
     """Extract text and table data from all pages of a PDF."""
     parts = []
@@ -213,6 +227,9 @@ def upload():
         tmp.close()
         file_size = os.path.getsize(tmp.name)
         log.info("Saved to temp file: %s (%d bytes)", tmp.name, file_size)
+
+        if not is_valid_pdf(tmp.name):
+            return _error_response("Invalid or corrupt PDF file."), 400
 
         log.info("Extracting text from PDF...")
         text = extract_text_from_pdf(tmp.name)
