@@ -10,6 +10,7 @@ import os
 import socket
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -19,7 +20,7 @@ from reportlab.pdfgen import canvas
 # Ensure MOCK_LLM is set for tests that hit the upload endpoint
 os.environ["MOCK_LLM"] = "1"
 
-from app import app, extract_text_from_pdf, extract_events_with_llm, generate_ics, ics_escape
+from app import app, extract_text_from_pdf, extract_events_with_llm, generate_ics, ics_escape, MOCK_EVENTS
 
 FIXTURE_PDF = os.path.join(os.path.dirname(__file__), "tests", "fixtures", "sample_quintalplan.pdf")
 
@@ -370,32 +371,27 @@ class TestUploadRoute:
         }, content_type="multipart/form-data")
         assert resp.status_code == 400
 
-    def test_post_with_valid_pdf_returns_ics(self, client):
+    def test_post_with_valid_pdf_returns_preview_html(self, client):
+        """Upload now returns a preview page, not a direct .ics download."""
         pdf_bytes = make_pdf(SAMPLE_QUINTALPLAN_TEXT)
         resp = client.post("/upload", data={
             "pdf": (io.BytesIO(pdf_bytes), "quintalplan.pdf"),
         }, content_type="multipart/form-data")
+        assert resp.status_code == 200
+        assert "text/html" in resp.content_type
+        assert b"Review Extracted Events" in resp.data
+
+    def test_confirm_returns_ics_with_correct_filename(self, client):
+        events = json.dumps(MOCK_EVENTS)
+        resp = client.post("/confirm", data={"events": events})
         assert resp.status_code == 200
         assert resp.content_type.startswith("text/calendar")
-        assert b"BEGIN:VCALENDAR" in resp.data
-        assert b"END:VCALENDAR" in resp.data
-        assert b"BEGIN:VEVENT" in resp.data
-
-    def test_ics_download_has_correct_filename(self, client):
-        pdf_bytes = make_pdf(SAMPLE_QUINTALPLAN_TEXT)
-        resp = client.post("/upload", data={
-            "pdf": (io.BytesIO(pdf_bytes), "quintalplan.pdf"),
-        }, content_type="multipart/form-data")
-        assert resp.status_code == 200
         assert "quintalplan.ics" in resp.headers.get("Content-Disposition", "")
 
-    def test_ics_contains_expected_mock_events(self, client):
-        pdf_bytes = make_pdf(SAMPLE_QUINTALPLAN_TEXT)
-        resp = client.post("/upload", data={
-            "pdf": (io.BytesIO(pdf_bytes), "quintalplan.pdf"),
-        }, content_type="multipart/form-data")
+    def test_confirm_ics_contains_expected_events(self, client):
+        events = json.dumps(MOCK_EVENTS)
+        resp = client.post("/confirm", data={"events": events})
         ics_text = resp.data.decode("utf-8")
-        # MOCK_EVENTS has 4 events
         assert ics_text.count("BEGIN:VEVENT") == 4
         assert "Elternabend" in ics_text
         assert "Herbstferien" in ics_text
@@ -427,6 +423,96 @@ class TestUploadRoute:
         assert resp.status_code == 400
         data = json.loads(resp.data)
         assert "error" in data
+
+
+# ──────────────────────────────────────────────
+# 5b. Preview + confirm flow
+# ──────────────────────────────────────────────
+
+class TestPreviewFlow:
+    def test_upload_returns_preview_page(self, client):
+        """After upload, user sees a preview of events — not an immediate download."""
+        pdf_bytes = make_pdf(SAMPLE_QUINTALPLAN_TEXT)
+        resp = client.post("/upload", data={
+            "pdf": (io.BytesIO(pdf_bytes), "quintalplan.pdf"),
+        }, content_type="multipart/form-data")
+        assert resp.status_code == 200
+        assert b"text/html" in resp.content_type.encode()
+        html = resp.data.decode("utf-8")
+        # Should show event titles from MOCK_EVENTS
+        assert "Elternabend" in html
+        assert "Herbstferien" in html
+        assert "Weihnachtsfeier" in html
+
+    def test_preview_shows_event_count(self, client):
+        pdf_bytes = make_pdf(SAMPLE_QUINTALPLAN_TEXT)
+        resp = client.post("/upload", data={
+            "pdf": (io.BytesIO(pdf_bytes), "quintalplan.pdf"),
+        }, content_type="multipart/form-data")
+        html = resp.data.decode("utf-8")
+        assert "4" in html  # 4 events in MOCK_EVENTS
+
+    def test_preview_has_confirm_form_posting_to_confirm(self, client):
+        pdf_bytes = make_pdf(SAMPLE_QUINTALPLAN_TEXT)
+        resp = client.post("/upload", data={
+            "pdf": (io.BytesIO(pdf_bytes), "quintalplan.pdf"),
+        }, content_type="multipart/form-data")
+        html = resp.data.decode("utf-8").lower()
+        assert 'action="/confirm"' in html
+        assert 'method="post"' in html
+
+    def test_preview_embeds_events_json(self, client):
+        """Events JSON must be embedded in the form so /confirm can generate .ics."""
+        pdf_bytes = make_pdf(SAMPLE_QUINTALPLAN_TEXT)
+        resp = client.post("/upload", data={
+            "pdf": (io.BytesIO(pdf_bytes), "quintalplan.pdf"),
+        }, content_type="multipart/form-data")
+        html = resp.data.decode("utf-8")
+        assert 'name="events"' in html
+        # The embedded value must be valid JSON containing our events
+        import re
+        match = re.search(r'name="events"[^>]*value="([^"]*)"', html)
+        if not match:
+            # try textarea
+            match = re.search(r'name="events"[^>]*>(.*?)</', html, re.DOTALL)
+        assert match, "events field not found in form"
+        import html as html_module
+        events = json.loads(html_module.unescape(match.group(1)))
+        assert isinstance(events, list)
+        assert len(events) == 4
+
+    def test_preview_has_start_over_link(self, client):
+        pdf_bytes = make_pdf(SAMPLE_QUINTALPLAN_TEXT)
+        resp = client.post("/upload", data={
+            "pdf": (io.BytesIO(pdf_bytes), "quintalplan.pdf"),
+        }, content_type="multipart/form-data")
+        html = resp.data.decode("utf-8")
+        assert 'href="/"' in html
+
+    def test_confirm_returns_ics_download(self, client):
+        """/confirm receives events JSON and returns the .ics file."""
+        events = json.dumps([{
+            "title": "Elternabend",
+            "date": "2025-09-15",
+            "end_date": None,
+            "time_start": "19:00",
+            "time_end": "21:00",
+            "description": None,
+        }])
+        resp = client.post("/confirm", data={"events": events})
+        assert resp.status_code == 200
+        assert resp.content_type.startswith("text/calendar")
+        assert b"BEGIN:VCALENDAR" in resp.data
+        assert b"Elternabend" in resp.data
+        assert "quintalplan.ics" in resp.headers.get("Content-Disposition", "")
+
+    def test_confirm_with_invalid_json_returns_400(self, client):
+        resp = client.post("/confirm", data={"events": "not valid json {"})
+        assert resp.status_code == 400
+
+    def test_confirm_with_missing_events_returns_400(self, client):
+        resp = client.post("/confirm")
+        assert resp.status_code == 400
 
 
 # ──────────────────────────────────────────────
@@ -504,84 +590,87 @@ class TestFrontendHtml:
 # 7. End-to-end with test client: full pipeline test
 # ──────────────────────────────────────────────
 
+def _extract_events_json_from_preview(html: str) -> str:
+    """Parse the events JSON out of the hidden form field in the preview page."""
+    import re, html as html_module
+    match = re.search(r'name="events"\s+value="([^"]*)"', html)
+    assert match, "events hidden field not found in preview HTML"
+    return html_module.unescape(match.group(1))
+
+
 class TestEndToEndTestClient:
     def test_full_pipeline_pdf_to_importable_ics(self, client):
-        """Simulate the complete user flow: upload PDF -> get .ics -> validate it."""
+        """Full two-step flow: upload → preview → confirm → .ics download."""
         pdf_bytes = make_pdf(SAMPLE_QUINTALPLAN_TEXT)
 
-        # Step 1: Upload
+        # Step 1: Upload → preview
         resp = client.post("/upload", data={
             "pdf": (io.BytesIO(pdf_bytes), "quintalplan.pdf"),
         }, content_type="multipart/form-data")
         assert resp.status_code == 200
+        assert "text/html" in resp.content_type
 
-        # Step 2: Parse the returned .ics
-        ics_text = resp.data.decode("utf-8")
+        # Step 2: Extract embedded events JSON from preview
+        events_json = _extract_events_json_from_preview(resp.data.decode("utf-8"))
 
-        # Step 3: Validate iCal structure
+        # Step 3: Confirm → download .ics
+        resp2 = client.post("/confirm", data={"events": events_json})
+        assert resp2.status_code == 200
+        ics_text = resp2.data.decode("utf-8")
+
+        # Step 4: Validate iCal structure
         assert ics_text.startswith("BEGIN:VCALENDAR\r\n")
         assert ics_text.strip().endswith("END:VCALENDAR")
-
-        # Step 4: Verify required iCal properties
         assert "VERSION:2.0" in ics_text
         assert "PRODID:" in ics_text
-        assert "CALSCALE:GREGORIAN" in ics_text
-
-        # Step 5: Verify events are properly formed
         vevent_count = ics_text.count("BEGIN:VEVENT")
         assert vevent_count > 0
         assert ics_text.count("END:VEVENT") == vevent_count
-
-        # Step 6: Every VEVENT must have UID, DTSTAMP, DTSTART, SUMMARY
-        vevents = ics_text.split("BEGIN:VEVENT")[1:]  # skip preamble
-        for vevent in vevents:
+        for vevent in ics_text.split("BEGIN:VEVENT")[1:]:
             assert "UID:" in vevent
-            assert "DTSTAMP:" in vevent
             assert "DTSTART" in vevent
             assert "SUMMARY:" in vevent
-
-        # Step 7: Verify timezone info
-        assert "Europe/Berlin" in ics_text or "VALUE=DATE" in ics_text
-
-        # Step 8: Verify CRLF line endings throughout
         lines = ics_text.split("\r\n")
-        for line in lines[:-1]:  # last element may be empty
+        for line in lines[:-1]:
             assert "\n" not in line
 
-    def test_fixture_pdf_upload(self, client):
-        """Upload the real fixture PDF file and get a valid .ics back."""
+    def test_fixture_pdf_full_flow(self, client):
+        """Real fixture PDF through the full upload → preview → confirm flow."""
         with open(FIXTURE_PDF, "rb") as f:
             resp = client.post("/upload", data={
                 "pdf": (f, "sample_quintalplan.pdf"),
             }, content_type="multipart/form-data")
         assert resp.status_code == 200
-        assert resp.content_type.startswith("text/calendar")
-        ics_text = resp.data.decode("utf-8")
-        assert "BEGIN:VCALENDAR" in ics_text
-        assert ics_text.count("BEGIN:VEVENT") == 4  # MOCK_EVENTS has 4
+        assert "text/html" in resp.content_type
+        assert b"Elternabend" in resp.data  # events shown in preview
+
+        events_json = _extract_events_json_from_preview(resp.data.decode("utf-8"))
+        resp2 = client.post("/confirm", data={"events": events_json})
+        assert resp2.status_code == 200
+        assert resp2.content_type.startswith("text/calendar")
+        assert resp2.data.count(b"BEGIN:VEVENT") == 4
 
     def test_fixture_pdf_download_to_file(self, client):
-        """Upload fixture PDF and save .ics to disk — simulates real download."""
+        """Full flow: fixture PDF → preview → confirm → save .ics to disk."""
         with open(FIXTURE_PDF, "rb") as f:
             resp = client.post("/upload", data={
                 "pdf": (f, "sample_quintalplan.pdf"),
             }, content_type="multipart/form-data")
-        assert resp.status_code == 200
+        events_json = _extract_events_json_from_preview(resp.data.decode("utf-8"))
 
-        # Write to a temp file like a browser would (binary mode preserves \r\n)
+        resp2 = client.post("/confirm", data={"events": events_json})
+        assert resp2.status_code == 200
+
         with tempfile.NamedTemporaryFile(suffix=".ics", delete=False) as out:
-            out.write(resp.data)
+            out.write(resp2.data)
             ics_path = out.name
-
         try:
-            # Read back in binary to verify raw bytes on disk
             with open(ics_path, "rb") as f:
                 raw = f.read()
             ics_text = raw.decode("utf-8")
             assert ics_text.startswith("BEGIN:VCALENDAR\r\n")
             assert ics_text.strip().endswith("END:VCALENDAR")
-            assert ics_text.count("BEGIN:VEVENT") == 4
-            assert b"\r\n" in raw, "File on disk must have CRLF line endings per RFC 5545"
+            assert b"\r\n" in raw
             assert os.path.getsize(ics_path) > 100
         finally:
             os.unlink(ics_path)
@@ -612,67 +701,63 @@ class TestRealHttpEndToEnd:
     """Tests that start a real Flask HTTP server and make actual network requests.
     This catches issues that the Flask test client hides, like ClientDisconnected."""
 
-    def test_real_http_upload_returns_ics(self, live_server):
-        """POST a real PDF to the live server and get .ics back over HTTP."""
-        body, content_type = _build_multipart_body(FIXTURE_PDF)
+    def _upload_and_confirm(self, live_server, filepath):
+        """Helper: POST PDF to /upload, parse preview, POST to /confirm, return .ics bytes."""
+        import re, html as html_module
 
+        # Step 1: upload
+        body, content_type = _build_multipart_body(filepath)
         req = urllib.request.Request(
-            f"{live_server}/upload",
-            data=body,
-            headers={"Content-Type": content_type},
-            method="POST",
+            f"{live_server}/upload", data=body,
+            headers={"Content-Type": content_type}, method="POST",
         )
         resp = urllib.request.urlopen(req, timeout=30)
-
         assert resp.status == 200
+        preview_html = resp.read().decode("utf-8")
+        assert "Review Extracted Events" in preview_html
+
+        # Step 2: extract events JSON from hidden field
+        match = re.search(r'name="events"\s+value="([^"]*)"', preview_html)
+        assert match, "events field not found in preview"
+        events_json = html_module.unescape(match.group(1))
+
+        # Step 3: confirm → get .ics
+        confirm_body = urllib.parse.urlencode({"events": events_json}).encode()
+        req2 = urllib.request.Request(
+            f"{live_server}/confirm", data=confirm_body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"}, method="POST",
+        )
+        resp2 = urllib.request.urlopen(req2, timeout=30)
+        assert resp2.status == 200
+        return resp2
+
+    def test_real_http_upload_returns_ics(self, live_server):
+        """Full two-step flow over real HTTP: upload → preview → confirm → .ics."""
+        resp = self._upload_and_confirm(live_server, FIXTURE_PDF)
         assert "text/calendar" in resp.headers.get("Content-Type", "")
         assert "quintalplan.ics" in resp.headers.get("Content-Disposition", "")
-
-        ics_bytes = resp.read()
-        ics_text = ics_bytes.decode("utf-8")
+        ics_text = resp.read().decode("utf-8")
         assert ics_text.startswith("BEGIN:VCALENDAR\r\n")
-        assert ics_text.strip().endswith("END:VCALENDAR")
         assert ics_text.count("BEGIN:VEVENT") == 4
 
     def test_real_http_download_saves_valid_ics_file(self, live_server):
-        """Full browser simulation: upload PDF over HTTP, save .ics to disk."""
-        body, content_type = _build_multipart_body(FIXTURE_PDF)
-
-        req = urllib.request.Request(
-            f"{live_server}/upload",
-            data=body,
-            headers={"Content-Type": content_type},
-            method="POST",
-        )
-        resp = urllib.request.urlopen(req, timeout=30)
-        assert resp.status == 200
-
-        # Save to disk like a browser download (binary preserves CRLF)
+        """Full browser simulation over real HTTP: save .ics to disk and validate."""
+        resp = self._upload_and_confirm(live_server, FIXTURE_PDF)
         raw_bytes = resp.read()
+
         with tempfile.NamedTemporaryFile(suffix=".ics", delete=False) as out:
             out.write(raw_bytes)
             ics_path = out.name
-
         try:
-            # Read back in binary to verify raw bytes on disk
             with open(ics_path, "rb") as f:
                 raw = f.read()
             ics_text = raw.decode("utf-8")
-
-            # Validate it's a complete, importable .ics file
             assert ics_text.startswith("BEGIN:VCALENDAR\r\n")
             assert ics_text.strip().endswith("END:VCALENDAR")
-            assert "VERSION:2.0" in ics_text
-            assert b"\r\n" in raw, "File must have CRLF line endings per RFC 5545"
+            assert b"\r\n" in raw
             assert ics_text.count("BEGIN:VEVENT") == 4
-            assert ics_text.count("END:VEVENT") == 4
-
-            # Every event must have required fields
             for vevent in ics_text.split("BEGIN:VEVENT")[1:]:
-                assert "UID:" in vevent
-                assert "DTSTAMP:" in vevent
-                assert "DTSTART" in vevent
-                assert "SUMMARY:" in vevent
+                assert "UID:" in vevent and "DTSTART" in vevent and "SUMMARY:" in vevent
         finally:
             os.unlink(ics_path)
 

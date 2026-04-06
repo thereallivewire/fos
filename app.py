@@ -244,15 +244,8 @@ def upload():
         if not events:
             return _error_response("No events could be extracted from the PDF."), 400
 
-        log.info("Generating iCal file...")
-        ics_content = generate_ics(events)
-        log.info("iCal generated (%d bytes). Returning download.", len(ics_content))
-
-        return Response(
-            ics_content,
-            mimetype="text/calendar; charset=utf-8",
-            headers={"Content-Disposition": "attachment; filename=quintalplan.ics"},
-        )
+        log.info("Rendering preview page...")
+        return render_template("preview.html", events=events, events_json=json.dumps(events))
     except json.JSONDecodeError as e:
         log.exception("JSON decode error: %s", e)
         return _error_response("Failed to parse the extracted events. Please try again."), 500
@@ -265,6 +258,25 @@ def upload():
                 os.unlink(tmp.name)
             except OSError:
                 pass
+
+
+@app.route("/confirm", methods=["POST"])
+def confirm():
+    events_json = request.form.get("events")
+    if not events_json:
+        return _error_response("No events data received."), 400
+    try:
+        events = json.loads(events_json)
+    except json.JSONDecodeError:
+        return _error_response("Invalid events data."), 400
+
+    ics_content = generate_ics(events)
+    log.info("iCal generated (%d bytes). Returning download.", len(ics_content))
+    return Response(
+        ics_content,
+        mimetype="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=quintalplan.ics"},
+    )
 
 
 if __name__ == "__main__":

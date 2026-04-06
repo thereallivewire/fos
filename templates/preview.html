@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Family OS - Review Events</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f0f2f5;
+            min-height: 100vh;
+            padding: 2rem 1rem;
+        }
+
+        .card {
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+            max-width: 760px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .header {
+            display: flex;
+            align-items: baseline;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+
+        h1 { font-size: 1.5rem; color: #1a1a2e; }
+
+        .badge {
+            background: #eff6ff;
+            color: #3b82f6;
+            border-radius: 999px;
+            padding: 0.2rem 0.75rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .subtitle {
+            color: #6b7280;
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        th {
+            text-align: left;
+            padding: 0.6rem 0.75rem;
+            background: #f9fafb;
+            color: #6b7280;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        td {
+            padding: 0.65rem 0.75rem;
+            border-bottom: 1px solid #f3f4f6;
+            color: #1f2937;
+            vertical-align: top;
+        }
+
+        tr:last-child td { border-bottom: none; }
+
+        tr:hover td { background: #f9fafb; }
+
+        .date-cell { white-space: nowrap; color: #6b7280; font-size: 0.85rem; }
+        .time-cell { white-space: nowrap; color: #9ca3af; font-size: 0.82rem; }
+        .title-cell { font-weight: 500; }
+        .desc-cell { color: #6b7280; font-size: 0.85rem; }
+
+        .actions {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1.75rem;
+            align-items: center;
+        }
+
+        .btn-primary {
+            padding: 0.8rem 1.75rem;
+            background: #3b82f6;
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn-primary:hover { background: #2563eb; }
+
+        .btn-secondary {
+            padding: 0.8rem 1.25rem;
+            background: transparent;
+            color: #6b7280;
+            border: 1px solid #d1d5db;
+            border-radius: 10px;
+            font-size: 0.95rem;
+            text-decoration: none;
+            transition: border-color 0.2s, color 0.2s;
+        }
+
+        .btn-secondary:hover { border-color: #9ca3af; color: #374151; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="header">
+            <h1>Review Extracted Events</h1>
+            <span class="badge">{{ events|length }} event{{ 's' if events|length != 1 }}</span>
+        </div>
+        <p class="subtitle">Check that everything looks right before downloading your calendar file.</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Event</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for e in events %}
+                <tr>
+                    <td class="date-cell">
+                        {{ e.date }}{% if e.end_date %} – {{ e.end_date }}{% endif %}
+                    </td>
+                    <td class="time-cell">
+                        {% if e.time_start %}{{ e.time_start }}{% if e.time_end %} – {{ e.time_end }}{% endif %}{% endif %}
+                    </td>
+                    <td class="title-cell">{{ e.title }}</td>
+                    <td class="desc-cell">{{ e.description or '' }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="actions">
+            <form action="/confirm" method="POST">
+                <input type="hidden" name="events" value="{{ events_json | e }}">
+                <button type="submit" class="btn-primary">Download .ics</button>
+            </form>
+            <a href="/" class="btn-secondary">Start over</a>
+        </div>
+    </div>
+</body>
+</html>
