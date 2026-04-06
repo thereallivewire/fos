@@ -302,8 +302,8 @@ def _get_local_ip():
 
 
 if __name__ == "__main__":
-    port = 8080
-    local_ip = _get_local_ip()
-    print(f"\n  Local:   http://127.0.0.1:{port}")
-    print(f"  Network: http://{local_ip}:{port}\n")
+    port = int(os.environ.get("PORT", 8080))
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        local_ip = _get_local_ip()
+        print(f"\n  Network: http://{local_ip}:{port}\n")
     app.run(host="0.0.0.0", debug=True, port=port, threaded=True)
